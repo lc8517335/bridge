@@ -46,16 +46,40 @@ end
 action :create do
   set new_resource
   net = node['bridge']['config']["#{new_resource.device}"]
-  puts "*******************new_resource.device:#{new_resource.device}"
   bind_interface = node['openstack']['endpoints']['network-openvswitch']['bind_interface']
   bind_interface_conf = "/etc/sysconfig/network-scripts/ifcfg-#{bind_interface}"
   if !net['status'].nil? and net['status'].include?("initial")
-    %x{echo "ifconfig #{new_resource.device} #{net['ip']}/16" >> /etc/rc.d/rc.local}
+    %x{echo "service network restart" >> /etc/rc.d/rc.local}
     %x{ifconfig #{new_resource.device} #{net['ip']}/16}
     %x{ifconfig #{bind_interface} 0}
+    %x{sed -i '/^HWADDR/d' #{bind_interface_conf}}
     %x{sed -i '/^IPADDR/d' #{bind_interface_conf}}
     %x{sed -i '/^NETMASK/d' #{bind_interface_conf}}
-    node.set['bridge']['config']["#{new_resource.device}"]['status'] = "config"
+    %x{sed -i 's/TYPE=Ethernet/TYPE=OVSPort/g' #{bind_interface_conf}}
+    %x{sed -i 's/BOOTPROTO=static/BOOTPROTO=none/g' #{bind_interface_conf}}
+    %x{echo 'DEVICETYPE=ovs' >> #{bind_interface_conf}}
+    %x{echo 'OVS_BRIDGE=br-#{bind_interface}' >> #{bind_interface_conf}}
+    %x{echo 'HOTPLUG=no' >> #{bind_interface_conf}}
+    if not ::File.exist?(net['conf'])
+      service "network" do
+        action :enable
+        subscribes :restart, "template[net['conf']]"
+      end
+
+      template net['conf'] do
+        source "ifcfg-br.erb"
+        mode 00644
+        owner "root"
+        group "root"
+        variables({
+                      :br => new_resource.device,
+                      :ip => net['ip'],
+                      :netmask => net['netmask']
+                  })
+        notifies :restart, "service[network]", :immediately
+      end
+      node.set['nic']['config']["#{new_resource.device}"]['status'] = "config"
+    end
     new_resource.updated_by_last_action(true)
   end
 end
